@@ -1,24 +1,25 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use codex_exec_server::EnvironmentManager;
-use codex_exec_server::EnvironmentManagerArgs;
 use codex_exec_server::ExecServerRuntimePaths;
+use codex_extension_api::UserInstructionsProvider;
 use codex_login::AuthManager;
+use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
-use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::user_input::UserInput;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
+use crate::resolve_installation_id;
 use crate::session::session::Session;
 use crate::session::turn::build_prompt;
 use crate::session::turn::built_tools;
 use crate::state_db_bridge::StateDbHandle;
 use crate::thread_manager::ThreadManager;
 use crate::thread_manager::thread_store_from_config;
+use codex_extension_api::empty_extension_registry;
 
 /// Build the model-visible `input` list for a single debug turn.
 #[doc(hidden)]
@@ -26,6 +27,7 @@ pub async fn build_prompt_input(
     mut config: Config,
     input: Vec<UserInput>,
     state_db: Option<StateDbHandle>,
+    user_instructions_provider: Arc<dyn UserInstructionsProvider>,
 ) -> CodexResult<Vec<ResponseItem>> {
     config.ephemeral = true;
 
@@ -38,14 +40,26 @@ pub async fn build_prompt_input(
     )?;
 
     let thread_store = thread_store_from_config(&config, state_db.clone());
+    let installation_id = resolve_installation_id(&config.codex_home).await?;
     let thread_manager = ThreadManager::new(
         &config,
         Arc::clone(&auth_manager),
         SessionSource::Exec,
-        Arc::new(EnvironmentManager::new(EnvironmentManagerArgs::new(local_runtime_paths)).await),
+        Arc::new(
+            EnvironmentManager::from_codex_home(
+                config.codex_home.clone(),
+                Some(local_runtime_paths),
+            )
+            .await
+            .map_err(|err| CodexErr::Fatal(err.to_string()))?,
+        ),
+        empty_extension_registry(),
+        user_instructions_provider,
         /*analytics_events_client*/ None,
         thread_store,
         state_db.clone(),
+        installation_id,
+        /*attestation_provider*/ None,
     );
     let thread = thread_manager.start_thread(config).await?;
 
@@ -66,8 +80,7 @@ pub(crate) async fn build_prompt_input_from_session(
         .await;
 
     if !input.is_empty() {
-        let input_item = ResponseInputItem::from(input);
-        let response_item = ResponseItem::from(input_item);
+        let response_item = sess.response_item_from_user_input(turn_context.as_ref(), input);
         sess.record_conversation_items(turn_context.as_ref(), std::slice::from_ref(&response_item))
             .await;
     }
@@ -76,15 +89,7 @@ pub(crate) async fn build_prompt_input_from_session(
         .clone_history()
         .await
         .for_prompt(&turn_context.model_info.input_modalities);
-    let router = built_tools(
-        sess,
-        turn_context.as_ref(),
-        &prompt_input,
-        &HashSet::new(),
-        Some(turn_context.turn_skills.outcome.as_ref()),
-        &CancellationToken::new(),
-    )
-    .await?;
+    let router = built_tools(sess, turn_context.as_ref(), &CancellationToken::new()).await?;
     let base_instructions = sess.get_base_instructions().await;
     let prompt = build_prompt(
         prompt_input,
@@ -93,5 +98,5 @@ pub(crate) async fn build_prompt_input_from_session(
         base_instructions,
     );
 
-    Ok(prompt.get_formatted_input())
+    Ok(prompt.input)
 }

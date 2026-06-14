@@ -47,8 +47,13 @@ async fn run_connection(
     runtime_paths: ExecServerRuntimePaths,
 ) {
     let router = Arc::new(build_router());
-    let (json_outgoing_tx, mut incoming_rx, mut disconnected_rx, connection_tasks) =
-        connection.into_parts();
+    let JsonRpcConnection {
+        outgoing_tx: json_outgoing_tx,
+        mut incoming_rx,
+        mut disconnected_rx,
+        task_handles: connection_tasks,
+        transport: _transport,
+    } = connection;
     let (outgoing_tx, mut outgoing_rx) =
         mpsc::channel::<RpcServerOutboundMessage>(CHANNEL_CAPACITY);
     let notifications = RpcNotificationSender::new(outgoing_tx.clone());
@@ -190,6 +195,7 @@ mod tests {
     use codex_app_server_protocol::JSONRPCRequest;
     use codex_app_server_protocol::JSONRPCResponse;
     use codex_app_server_protocol::RequestId;
+    use codex_utils_path_uri::PathUri;
     use serde::Serialize;
     use serde::de::DeserializeOwned;
     use tokio::io::AsyncBufReadExt;
@@ -391,7 +397,7 @@ mod tests {
         ExecParams {
             process_id,
             argv: sleep_then_print_argv(),
-            cwd: std::env::current_dir().expect("cwd"),
+            cwd: PathUri::from_path(std::env::current_dir().expect("cwd")).expect("cwd URI"),
             env_policy: None,
             env,
             tty: false,

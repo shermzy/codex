@@ -40,6 +40,7 @@ fn hooks_file_deserializes_existing_json_shape() {
                     matcher: Some("^Bash$".to_string()),
                     hooks: vec![HookHandlerConfig::Command {
                         command: "python3 /tmp/pre.py".to_string(),
+                        command_windows: None,
                         timeout_sec: Some(10),
                         r#async: false,
                         status_message: Some("checking".to_string()),
@@ -48,6 +49,30 @@ fn hooks_file_deserializes_existing_json_shape() {
                 ..Default::default()
             },
         }
+    );
+}
+
+#[test]
+fn hooks_file_rejects_events_outside_hooks_object() {
+    let error = serde_json::from_str::<HooksFile>(
+        r#"{
+  "SessionStart": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 /tmp/session_start.py"
+        }
+      ]
+    }
+  ]
+}"#,
+    )
+    .expect_err("root-level hook events should be rejected");
+
+    assert!(
+        error.to_string().contains("unknown field `SessionStart`"),
+        "unexpected parse error: {error}"
     );
 }
 
@@ -74,6 +99,7 @@ statusMessage = "checking"
                 matcher: Some("^Bash$".to_string()),
                 hooks: vec![HookHandlerConfig::Command {
                     command: "python3 /tmp/pre.py".to_string(),
+                    command_windows: None,
                     timeout_sec: Some(10),
                     r#async: false,
                     status_message: Some("checking".to_string()),
@@ -90,6 +116,7 @@ fn hooks_toml_deserializes_inline_events_and_state_map() {
         r#"
 [state."/tmp/hooks.json:pre_tool_use:0:0"]
 enabled = false
+trusted_hash = "sha256:abc123"
 
 [[PreToolUse]]
 matcher = "^Bash$"
@@ -109,6 +136,7 @@ command = "python3 /tmp/pre.py"
                     matcher: Some("^Bash$".to_string()),
                     hooks: vec![HookHandlerConfig::Command {
                         command: "python3 /tmp/pre.py".to_string(),
+                        command_windows: None,
                         timeout_sec: None,
                         r#async: false,
                         status_message: None,
@@ -120,6 +148,7 @@ command = "python3 /tmp/pre.py"
                 "/tmp/hooks.json:pre_tool_use:0:0".to_string(),
                 super::HookStateToml {
                     enabled: Some(false),
+                    trusted_hash: Some("sha256:abc123".to_string()),
                 },
             )]),
         }
@@ -152,6 +181,7 @@ command = "python3 /enterprise/place/pre.py"
                     matcher: Some("^Bash$".to_string()),
                     hooks: vec![HookHandlerConfig::Command {
                         command: "python3 /enterprise/place/pre.py".to_string(),
+                        command_windows: None,
                         timeout_sec: None,
                         r#async: false,
                         status_message: None,
@@ -159,6 +189,76 @@ command = "python3 /enterprise/place/pre.py"
                 }],
                 ..Default::default()
             },
+        }
+    );
+}
+
+#[test]
+fn hook_events_deserialize_windows_override_from_toml() {
+    let parsed: HookEventsToml = toml::from_str(
+        r#"
+[[PreToolUse]]
+matcher = "^Bash$"
+
+[[PreToolUse.hooks]]
+type = "command"
+command = "bash /enterprise/hooks/pre.sh"
+command_windows = "powershell -File C:\\enterprise\\hooks\\pre.ps1"
+"#,
+    )
+    .expect("hook command Windows override TOML should deserialize");
+
+    assert_eq!(
+        parsed,
+        HookEventsToml {
+            pre_tool_use: vec![MatcherGroup {
+                matcher: Some("^Bash$".to_string()),
+                hooks: vec![HookHandlerConfig::Command {
+                    command: "bash /enterprise/hooks/pre.sh".to_string(),
+                    command_windows: Some(
+                        r"powershell -File C:\enterprise\hooks\pre.ps1".to_string(),
+                    ),
+                    timeout_sec: None,
+                    r#async: false,
+                    status_message: None,
+                }],
+            }],
+            ..Default::default()
+        }
+    );
+}
+
+#[test]
+fn hook_events_deserialize_camel_case_windows_override_from_toml() {
+    let parsed: HookEventsToml = toml::from_str(
+        r#"
+[[PreToolUse]]
+matcher = "^Bash$"
+
+[[PreToolUse.hooks]]
+type = "command"
+command = "bash /enterprise/hooks/pre.sh"
+commandWindows = "powershell -File C:\\enterprise\\hooks\\pre.ps1"
+"#,
+    )
+    .expect("camelCase hook command Windows override TOML should deserialize");
+
+    assert_eq!(
+        parsed,
+        HookEventsToml {
+            pre_tool_use: vec![MatcherGroup {
+                matcher: Some("^Bash$".to_string()),
+                hooks: vec![HookHandlerConfig::Command {
+                    command: "bash /enterprise/hooks/pre.sh".to_string(),
+                    command_windows: Some(
+                        r"powershell -File C:\enterprise\hooks\pre.ps1".to_string(),
+                    ),
+                    timeout_sec: None,
+                    r#async: false,
+                    status_message: None,
+                }],
+            }],
+            ..Default::default()
         }
     );
 }

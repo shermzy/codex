@@ -7,12 +7,12 @@ version.workspace = true
 [lib]
 name = "codex_agent_graph_store"
 path = "src/lib.rs"
+doctest = false
 
 [lints]
 workspace = true
 
 [dependencies]
-async-trait = { workspace = true }
 codex-protocol = { workspace = true }
 codex-state = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

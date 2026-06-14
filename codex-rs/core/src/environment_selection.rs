@@ -9,18 +9,19 @@ use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_utils_absolute_path::AbsolutePathBuf;
 
 use crate::session::turn_context::TurnEnvironment;
+use crate::shell::Shell;
 
 pub(crate) fn default_thread_environment_selections(
     environment_manager: &EnvironmentManager,
     cwd: &AbsolutePathBuf,
 ) -> Vec<TurnEnvironmentSelection> {
     environment_manager
-        .default_environment_id()
+        .default_environment_ids()
+        .into_iter()
         .map(|environment_id| TurnEnvironmentSelection {
-            environment_id: environment_id.to_string(),
+            environment_id,
             cwd: cwd.clone(),
         })
-        .into_iter()
         .collect()
 }
 
@@ -41,6 +42,7 @@ impl ResolvedTurnEnvironments {
         self.turn_environments.first()
     }
 
+    #[cfg(test)]
     pub(crate) fn primary_environment(&self) -> Option<Arc<codex_exec_server::Environment>> {
         self.primary()
             .map(|environment| Arc::clone(&environment.environment))
@@ -50,9 +52,17 @@ impl ResolvedTurnEnvironments {
         self.primary()
             .map(|environment| environment.environment.get_filesystem())
     }
+
+    pub(crate) fn single_local_environment_cwd(&self) -> Option<&AbsolutePathBuf> {
+        let [environment] = self.turn_environments.as_slice() else {
+            return None;
+        };
+
+        (!environment.environment.is_remote()).then_some(environment.cwd())
+    }
 }
 
-pub(crate) fn resolve_environment_selections(
+pub(crate) async fn resolve_environment_selections(
     environment_manager: &EnvironmentManager,
     environments: &[TurnEnvironmentSelection],
 ) -> CodexResult<ResolvedTurnEnvironments> {
@@ -71,22 +81,36 @@ pub(crate) fn resolve_environment_selections(
             .ok_or_else(|| {
                 CodexErr::InvalidRequest(format!("unknown turn environment id `{environment_id}`"))
             })?;
-        turn_environments.push(TurnEnvironment {
+        let shell = match environment.info().await {
+            Ok(info) => match Shell::from_environment_shell_info(info.shell) {
+                Ok(shell) => Some(shell),
+                Err(err) => {
+                    tracing::warn!(
+                        "failed to resolve shell for environment `{environment_id}`: {err}"
+                    );
+                    None
+                }
+            },
+            Err(err) => {
+                tracing::warn!("failed to get info for environment `{environment_id}`: {err}");
+                None
+            }
+        };
+        turn_environments.push(TurnEnvironment::new(
             environment_id,
             environment,
-            cwd: selected_environment.cwd.clone(),
-            // TODO(starr): Resolve shell metadata per environment instead of
-            // hardcoding bash.
-            shell: "bash".to_string(),
-        });
+            selected_environment.cwd.clone(),
+            shell,
+        ));
     }
-
     Ok(ResolvedTurnEnvironments { turn_environments })
 }
 
 #[cfg(test)]
 mod tests {
+    use codex_exec_server::Environment;
     use codex_exec_server::ExecServerRuntimePaths;
+    use codex_exec_server::LOCAL_ENVIRONMENT_ID;
     use codex_exec_server::REMOTE_ENVIRONMENT_ID;
     use codex_protocol::protocol::TurnEnvironmentSelection;
     use codex_utils_absolute_path::AbsolutePathBuf;
@@ -107,7 +131,7 @@ mod tests {
         let cwd = AbsolutePathBuf::current_dir().expect("cwd");
         let manager = EnvironmentManager::create_for_tests(
             Some("ws://127.0.0.1:8765".to_string()),
-            test_runtime_paths(),
+            Some(test_runtime_paths()),
         )
         .await;
 
@@ -121,9 +145,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn toml_default_thread_environment_selections_include_local_and_remote() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            temp_dir.path().join("environments.toml"),
+            r#"
+[[environments]]
+id = "remote"
+url = "ws://127.0.0.1:8765"
+"#,
+        )
+        .expect("write environments.toml");
+        let cwd = AbsolutePathBuf::current_dir().expect("cwd");
+        let manager =
+            EnvironmentManager::from_codex_home(temp_dir.path(), Some(test_runtime_paths()))
+                .await
+                .expect("environment manager");
+
+        assert_eq!(
+            default_thread_environment_selections(&manager, &cwd),
+            vec![
+                TurnEnvironmentSelection {
+                    environment_id: LOCAL_ENVIRONMENT_ID.to_string(),
+                    cwd: cwd.clone(),
+                },
+                TurnEnvironmentSelection {
+                    environment_id: REMOTE_ENVIRONMENT_ID.to_string(),
+                    cwd,
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn default_thread_environment_selections_empty_when_default_disabled() {
         let cwd = AbsolutePathBuf::current_dir().expect("cwd");
-        let manager = EnvironmentManager::disabled_for_tests(test_runtime_paths());
+        let manager = EnvironmentManager::without_environments();
 
         assert_eq!(
             default_thread_environment_selections(&manager, &cwd),
@@ -149,6 +206,7 @@ mod tests {
                 },
             ],
         )
+        .await
         .expect_err("duplicate environment id should fail");
 
         assert!(err.to_string().contains("duplicate"));
@@ -167,6 +225,7 @@ mod tests {
                 cwd: selected_cwd,
             }],
         )
+        .await
         .expect("environment selections should resolve");
 
         assert_eq!(
@@ -176,5 +235,62 @@ mod tests {
                 .environment_id,
             "local"
         );
+        assert_eq!(
+            resolved.primary().expect("primary environment").shell,
+            Some(
+                Shell::from_environment_shell_info(
+                    manager
+                        .get_environment("local")
+                        .expect("local environment")
+                        .info()
+                        .await
+                        .expect("local environment info")
+                        .shell
+                )
+                .expect("resolved shell")
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn single_local_environment_cwd_requires_exactly_one_local_environment() {
+        let cwd = AbsolutePathBuf::current_dir().expect("cwd");
+        let local_manager = EnvironmentManager::default_for_tests();
+        let local = resolve_environment_selections(
+            &local_manager,
+            &[TurnEnvironmentSelection {
+                environment_id: LOCAL_ENVIRONMENT_ID.to_string(),
+                cwd: cwd.clone(),
+            }],
+        )
+        .await
+        .expect("local environment should resolve");
+        let remote_environment = Arc::new(
+            Environment::create_for_tests(Some("ws://127.0.0.1:8765".to_string()))
+                .expect("remote environment"),
+        );
+        let remote = ResolvedTurnEnvironments {
+            turn_environments: vec![TurnEnvironment::new(
+                REMOTE_ENVIRONMENT_ID.to_string(),
+                remote_environment.clone(),
+                cwd.clone(),
+                /*shell*/ None,
+            )],
+        };
+        let multiple = ResolvedTurnEnvironments {
+            turn_environments: vec![
+                local.primary().expect("local environment").clone(),
+                TurnEnvironment::new(
+                    REMOTE_ENVIRONMENT_ID.to_string(),
+                    remote_environment,
+                    cwd.clone(),
+                    /*shell*/ None,
+                ),
+            ],
+        };
+
+        assert_eq!(local.single_local_environment_cwd(), Some(&cwd));
+        assert_eq!(remote.single_local_environment_cwd(), None);
+        assert_eq!(multiple.single_local_environment_cwd(), None);
     }
 }

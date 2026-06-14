@@ -4,6 +4,7 @@
 //! entry, Ctrl-L clear, external editor launch, and agent navigation shortcuts.
 
 use super::*;
+use crate::app_backtrack::SIDE_EDIT_PREVIOUS_UNAVAILABLE_MESSAGE;
 
 impl App {
     pub(super) async fn launch_external_editor(&mut self, tui: &mut tui::Tui) {
@@ -66,6 +67,25 @@ impl App {
         self.chat_widget
             .set_external_editor_state(ExternalEditorState::Closed);
         self.chat_widget.set_footer_hint_override(/*items*/ None);
+        tui.frame_requester().schedule_frame();
+    }
+
+    pub(super) fn apply_raw_output_mode(
+        &mut self,
+        tui: &mut tui::Tui,
+        enabled: bool,
+        notify: bool,
+    ) {
+        if notify {
+            self.chat_widget.set_raw_output_mode_and_notify(enabled);
+        } else {
+            self.chat_widget.set_raw_output_mode(enabled);
+        }
+        if let Err(err) = self.reflow_transcript_now(tui) {
+            tracing::warn!(error = %err, "failed to reflow transcript after raw output mode toggle");
+            self.chat_widget
+                .add_error_message(format!("Failed to redraw transcript: {err}"));
+        }
         tui.frame_requester().schedule_frame();
     }
 
@@ -137,6 +157,13 @@ impl App {
             return;
         }
 
+        if app_keymap_shortcuts_available && self.keymap.app.toggle_raw_output.is_pressed(key_event)
+        {
+            let enabled = !self.chat_widget.raw_output_mode();
+            self.apply_raw_output_mode(tui, enabled, /*notify*/ false);
+            return;
+        }
+
         if app_keymap_shortcuts_available && self.keymap.app.open_transcript.is_pressed(key_event) {
             // Enter alternate screen and set viewport to full size.
             let _ = tui.enter_alt_screen();
@@ -171,6 +198,8 @@ impl App {
             // handles it.
             if self.should_handle_backtrack_esc(key_event) {
                 self.handle_backtrack_esc_key(tui);
+            } else if self.should_reject_side_backtrack_esc(key_event) {
+                self.reject_side_backtrack_esc();
             } else {
                 self.chat_widget.handle_key_event(key_event);
             }
@@ -226,9 +255,23 @@ impl App {
     }
 
     pub(super) fn should_handle_backtrack_esc(&self, key_event: KeyEvent) -> bool {
-        self.chat_widget.is_normal_backtrack_mode()
+        !self.chat_widget.side_conversation_active()
+            && self.chat_widget.is_normal_backtrack_mode()
             && self.chat_widget.composer_is_empty()
             && !self.chat_widget.should_handle_vim_insert_escape(key_event)
+    }
+
+    pub(super) fn should_reject_side_backtrack_esc(&self, key_event: KeyEvent) -> bool {
+        self.chat_widget.side_conversation_active()
+            && self.chat_widget.is_normal_backtrack_mode()
+            && self.chat_widget.composer_is_empty()
+            && !self.chat_widget.should_handle_vim_insert_escape(key_event)
+    }
+
+    pub(super) fn reject_side_backtrack_esc(&mut self) {
+        self.reset_backtrack_state();
+        self.chat_widget
+            .add_error_message(SIDE_EDIT_PREVIOUS_UNAVAILABLE_MESSAGE.to_string());
     }
 
     fn app_keymap_shortcuts_available(&self) -> bool {

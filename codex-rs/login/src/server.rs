@@ -25,6 +25,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::auth::AuthDotJson;
+use crate::auth::AuthKeyringBackendKind;
 use crate::auth::save_auth;
 use crate::default_client::originator;
 use crate::pkce::PkceCodes;
@@ -66,9 +67,10 @@ pub struct ServerOptions {
     pub port: u16,
     pub open_browser: bool,
     pub force_state: Option<String>,
-    pub forced_chatgpt_workspace_id: Option<String>,
+    pub forced_chatgpt_workspace_id: Option<Vec<String>>,
     pub codex_streamlined_login: bool,
     pub cli_auth_credentials_store_mode: AuthCredentialsStoreMode,
+    pub auth_keyring_backend_kind: AuthKeyringBackendKind,
 }
 
 impl ServerOptions {
@@ -76,8 +78,9 @@ impl ServerOptions {
     pub fn new(
         codex_home: PathBuf,
         client_id: String,
-        forced_chatgpt_workspace_id: Option<String>,
+        forced_chatgpt_workspace_id: Option<Vec<String>>,
         cli_auth_credentials_store_mode: AuthCredentialsStoreMode,
+        auth_keyring_backend_kind: AuthKeyringBackendKind,
     ) -> Self {
         Self {
             codex_home,
@@ -89,6 +92,7 @@ impl ServerOptions {
             forced_chatgpt_workspace_id,
             codex_streamlined_login: false,
             cli_auth_credentials_store_mode,
+            auth_keyring_backend_kind,
         }
     }
 }
@@ -359,6 +363,7 @@ async fn process_request(
                         tokens.access_token.clone(),
                         tokens.refresh_token.clone(),
                         opts.cli_auth_credentials_store_mode,
+                        opts.auth_keyring_backend_kind,
                     )
                     .await
                     {
@@ -483,7 +488,7 @@ fn build_authorize_url(
     redirect_uri: &str,
     pkce: &PkceCodes,
     state: &str,
-    forced_chatgpt_workspace_id: Option<&str>,
+    forced_chatgpt_workspace_ids: Option<&[String]>,
 ) -> String {
     let mut query = vec![
         ("response_type".to_string(), "code".to_string()),
@@ -504,8 +509,8 @@ fn build_authorize_url(
         ("state".to_string(), state.to_string()),
         ("originator".to_string(), originator().value),
     ];
-    if let Some(workspace_id) = forced_chatgpt_workspace_id {
-        query.push(("allowed_workspace_id".to_string(), workspace_id.to_string()));
+    if let Some(workspace_ids) = forced_chatgpt_workspace_ids {
+        query.push(("allowed_workspace_id".to_string(), workspace_ids.join(",")));
     }
     let qs = query
         .into_iter()
@@ -789,6 +794,7 @@ pub(crate) async fn persist_tokens_async(
     access_token: String,
     refresh_token: String,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
 ) -> io::Result<()> {
     // Reuse existing synchronous logic but run it off the async runtime.
     let codex_home = codex_home.to_path_buf();
@@ -811,8 +817,15 @@ pub(crate) async fn persist_tokens_async(
             tokens: Some(tokens),
             last_refresh: Some(Utc::now()),
             agent_identity: None,
+            personal_access_token: None,
+            bedrock_api_key: None,
         };
-        save_auth(&codex_home, &auth, auth_credentials_store_mode)
+        save_auth(
+            &codex_home,
+            &auth,
+            auth_credentials_store_mode,
+            keyring_backend_kind,
+        )
     })
     .await
     .map_err(|e| io::Error::other(format!("persist task failed: {e}")))?
@@ -908,7 +921,7 @@ fn jwt_auth_claims(jwt: &str) -> serde_json::Map<String, serde_json::Value> {
 
 /// Validates the ID token against an optional workspace restriction.
 pub(crate) fn ensure_workspace_allowed(
-    expected: Option<&str>,
+    expected: Option<&[String]>,
     id_token: &str,
 ) -> Result<(), String> {
     let Some(expected) = expected else {
@@ -920,10 +933,27 @@ pub(crate) fn ensure_workspace_allowed(
         return Err("Login is restricted to a specific workspace, but the token did not include an chatgpt_account_id claim.".to_string());
     };
 
-    if actual == expected {
+    ensure_workspace_account_allowed(Some(expected), actual)
+}
+
+/// Validates an already known ChatGPT account ID against an optional workspace restriction.
+///
+/// PAT login calls this directly because `/whoami` supplies the account ID without an ID token.
+pub(crate) fn ensure_workspace_account_allowed(
+    expected: Option<&[String]>,
+    actual: &str,
+) -> Result<(), String> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+
+    if expected.iter().any(|workspace_id| workspace_id == actual) {
         Ok(())
     } else {
-        Err(format!("Login is restricted to workspace id {expected}."))
+        Err(format!(
+            "Login is restricted to workspace id(s) {}.",
+            expected.join(", ")
+        ))
     }
 }
 

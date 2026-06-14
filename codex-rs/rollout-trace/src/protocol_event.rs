@@ -21,6 +21,7 @@ use codex_protocol::protocol::McpToolCallEndEvent;
 use codex_protocol::protocol::PatchApplyBeginEvent;
 use codex_protocol::protocol::PatchApplyEndEvent;
 use codex_protocol::protocol::PatchApplyStatus;
+use codex_protocol::protocol::SubAgentActivityEvent;
 use codex_protocol::protocol::TurnAbortReason;
 use serde::Serialize;
 
@@ -110,6 +111,7 @@ pub(crate) enum ToolRuntimePayload<'a> {
     CollabWaitingEnd(&'a codex_protocol::protocol::CollabWaitingEndEvent),
     CollabCloseBegin(&'a codex_protocol::protocol::CollabCloseBeginEvent),
     CollabCloseEnd(&'a codex_protocol::protocol::CollabCloseEndEvent),
+    SubAgentActivity(&'a SubAgentActivityEvent),
 }
 
 impl Serialize for ToolRuntimePayload<'_> {
@@ -132,6 +134,7 @@ impl Serialize for ToolRuntimePayload<'_> {
             ToolRuntimePayload::CollabWaitingEnd(event) => event.serialize(serializer),
             ToolRuntimePayload::CollabCloseBegin(event) => event.serialize(serializer),
             ToolRuntimePayload::CollabCloseEnd(event) => event.serialize(serializer),
+            ToolRuntimePayload::SubAgentActivity(event) => event.serialize(serializer),
         }
     }
 }
@@ -215,6 +218,11 @@ pub(crate) fn tool_runtime_trace_event(event: &EventMsg) -> Option<ToolRuntimeTr
             status: ExecutionStatus::Completed,
             payload: ToolRuntimePayload::CollabCloseEnd(event),
         }),
+        EventMsg::SubAgentActivity(event) => Some(ToolRuntimeTraceEvent::Ended {
+            tool_call_id: &event.event_id,
+            status: ExecutionStatus::Completed,
+            payload: ToolRuntimePayload::SubAgentActivity(event),
+        }),
         EventMsg::Error(_)
         | EventMsg::Warning(_)
         | EventMsg::GuardianWarning(_)
@@ -224,10 +232,12 @@ pub(crate) fn tool_runtime_trace_event(event: &EventMsg) -> Option<ToolRuntimeTr
         | EventMsg::RealtimeConversationSdp(_)
         | EventMsg::ModelReroute(_)
         | EventMsg::ModelVerification(_)
+        | EventMsg::TurnModerationMetadata(_)
         | EventMsg::ContextCompacted(_)
         | EventMsg::ThreadRolledBack(_)
         | EventMsg::ThreadGoalUpdated(_)
         | EventMsg::TurnStarted(_)
+        | EventMsg::ThreadSettingsApplied(_)
         | EventMsg::TurnComplete(_)
         | EventMsg::TokenCount(_)
         | EventMsg::AgentMessage(_)
@@ -236,7 +246,6 @@ pub(crate) fn tool_runtime_trace_event(event: &EventMsg) -> Option<ToolRuntimeTr
         | EventMsg::AgentReasoningRawContent(_)
         | EventMsg::AgentReasoningSectionBreak(_)
         | EventMsg::SessionConfigured(_)
-        | EventMsg::ThreadNameUpdated(_)
         | EventMsg::McpStartupUpdate(_)
         | EventMsg::McpStartupComplete(_)
         | EventMsg::WebSearchBegin(_)
@@ -260,11 +269,7 @@ pub(crate) fn tool_runtime_trace_event(event: &EventMsg) -> Option<ToolRuntimeTr
         | EventMsg::StreamError(_)
         | EventMsg::PatchApplyUpdated(_)
         | EventMsg::TurnDiff(_)
-        | EventMsg::GetHistoryEntryResponse(_)
-        | EventMsg::McpListToolsResponse(_)
-        | EventMsg::ListSkillsResponse(_)
         | EventMsg::RealtimeConversationListVoicesResponse(_)
-        | EventMsg::SkillsUpdateAvailable
         | EventMsg::PlanUpdate(_)
         | EventMsg::TurnAborted(_)
         | EventMsg::ShutdownComplete
@@ -290,7 +295,6 @@ pub(crate) fn wrapped_protocol_event_type(event: &EventMsg) -> Option<&'static s
         EventMsg::TurnStarted(_) => Some("turn_started"),
         EventMsg::TurnComplete(_) => Some("turn_complete"),
         EventMsg::TurnAborted(_) => Some("turn_aborted"),
-        EventMsg::ThreadNameUpdated(_) => Some("thread_name_updated"),
         EventMsg::ThreadRolledBack(_) => Some("thread_rolled_back"),
         EventMsg::Error(_) => Some("error"),
         EventMsg::Warning(_) => Some("warning"),
@@ -302,7 +306,9 @@ pub(crate) fn wrapped_protocol_event_type(event: &EventMsg) -> Option<&'static s
         | EventMsg::RealtimeConversationSdp(_)
         | EventMsg::ModelReroute(_)
         | EventMsg::ModelVerification(_)
+        | EventMsg::TurnModerationMetadata(_)
         | EventMsg::ContextCompacted(_)
+        | EventMsg::ThreadSettingsApplied(_)
         | EventMsg::TokenCount(_)
         | EventMsg::AgentMessage(_)
         | EventMsg::UserMessage(_)
@@ -337,11 +343,7 @@ pub(crate) fn wrapped_protocol_event_type(event: &EventMsg) -> Option<&'static s
         | EventMsg::PatchApplyUpdated(_)
         | EventMsg::PatchApplyEnd(_)
         | EventMsg::TurnDiff(_)
-        | EventMsg::GetHistoryEntryResponse(_)
-        | EventMsg::McpListToolsResponse(_)
-        | EventMsg::ListSkillsResponse(_)
         | EventMsg::RealtimeConversationListVoicesResponse(_)
-        | EventMsg::SkillsUpdateAvailable
         | EventMsg::PlanUpdate(_)
         | EventMsg::EnteredReviewMode(_)
         | EventMsg::ExitedReviewMode(_)
@@ -363,7 +365,8 @@ pub(crate) fn wrapped_protocol_event_type(event: &EventMsg) -> Option<&'static s
         | EventMsg::CollabCloseBegin(_)
         | EventMsg::CollabCloseEnd(_)
         | EventMsg::CollabResumeBegin(_)
-        | EventMsg::CollabResumeEnd(_) => None,
+        | EventMsg::CollabResumeEnd(_)
+        | EventMsg::SubAgentActivity(_) => None,
     }
 }
 
@@ -399,3 +402,7 @@ fn execution_status_for_abort_reason(reason: &TurnAbortReason) -> ExecutionStatu
         | TurnAbortReason::BudgetLimited => ExecutionStatus::Cancelled,
     }
 }
+
+#[cfg(test)]
+#[path = "protocol_event_tests.rs"]
+mod tests;
