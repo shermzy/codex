@@ -3,13 +3,13 @@
 Cloud Run URL:
 
 ```text
-https://document-ocr-90352485347.asia-southeast1.run.app
+https://document-ocr-fnmzxhthpq-as.a.run.app
 ```
 
 Health check:
 
 ```powershell
-curl.exe https://document-ocr-90352485347.asia-southeast1.run.app/health
+curl.exe https://document-ocr-fnmzxhthpq-as.a.run.app/health
 ```
 
 Get the API key from Secret Manager:
@@ -23,7 +23,7 @@ $env:OCR_API_KEY = gcloud secrets versions access latest `
 OCR a PDF or scanned image:
 
 ```powershell
-curl.exe -X POST "https://document-ocr-90352485347.asia-southeast1.run.app/ocr" `
+curl.exe -X POST "https://document-ocr-fnmzxhthpq-as.a.run.app/ocr" `
   -H "X-API-Key: $env:OCR_API_KEY" `
   -F "file=@C:\path\to\document.pdf;type=application/pdf"
 ```
